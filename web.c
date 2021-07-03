@@ -1,4 +1,3 @@
-/*web.c - Handle any web requests*/
 /* ---------------------------------------------- *
  * web.c
  * =====
@@ -299,14 +298,13 @@ void print_www ( wwwResponse *r ) {
 
 
 //Use int pointers
-static int select_www( const char *addr, wwwType *t ) {
-//static int select_www( const char *addr, int *port, int *secure ) {
+static int select_www( const char *addr, int *port, int *secure ) {
 	//Checking for secure or not...
 	//you can extract the root from here...
 	if ( memcmp( "https", addr, 5 ) == 0 )
-		t->secure = 1, t->port = 443, t->fragment = 0;
+		*secure = 1, *port = 443;
 	else if ( memcmp( "http", addr, 4 ) == 0 )
-		t->secure = 0, t->port = 80, t->fragment = 0;
+		*secure = 0, *port = 80;
 	else {
 		return 0;
 	}
@@ -324,18 +322,17 @@ int load_www ( const char *p, wwwResponse *r ) {
 	;
 	int err, ret, sd, ii, type, len, sockfd, c = 0, chunked = 0, port = 0, secure = 0;
 	unsigned int status;
-	wwwType t = {0};
 	uint8_t *msg = NULL;
 	char *desc = NULL, buf[ 4096 ] = { 0 }, GetMsg[2048] = { 0 }, rootBuf[ 128 ] = { 0 };
 	const char *root = NULL, *site = NULL, *path = NULL, *urlpath = NULL;
 
 	//Negotiate http/https
-	if ( !select_www( p, &t ) ) {
+	if ( !select_www( p, &port, &secure ) ) {
 		return ERR( r->err, "URL '%s' appears to be a fragment.", p );
 	}
 
 	//What does this do?
-	p = ( t.secure ) ? &p[8] : &p[7], fp = p;
+	p = ( secure ) ? &p[8] : &p[7], fp = p;
 
 	//Chop the URL very simply and crudely.
 	if (( c = memchrat( p, '/', strlen( p ) )) == -1 )
@@ -347,24 +344,24 @@ int load_www ( const char *p, wwwResponse *r ) {
 	}
 
 	//Pack a message
-	if ( t.port != 443 )
+	if ( port != 443 )
 		len = snprintf( GetMsg, sizeof(GetMsg) - 1, GetMsgFmt, path, root, ua );
 	else {
 		char hbbuf[ 128 ] = { 0 };
 		//snprintf( hbbuf, sizeof( hbbuf ) - 1, "www.%s:%d", root, t->port );
-		snprintf( hbbuf, sizeof( hbbuf ) - 1, "%s:%d", root, t.port );
+		snprintf( hbbuf, sizeof( hbbuf ) - 1, "%s:%d", root, port );
 		len = snprintf( GetMsg, sizeof(GetMsg) - 1, GetMsgFmt, path, hbbuf, ua );
 	}
 
 	//NOTE: Although it is definitely easier to use CURL to handle the rest of the 
 	//request, dealing with TLS at C level is more complicated than it probably should be.  
 	//Do either an insecure request or a secure request
-	if ( !t.secure ) {
+	if ( !secure ) {
 		//socket connect is the shorter way to do this...
 		struct addrinfo hints, *servinfo, *pp;
 		int rv;
 		char b[10] = {0}, s[ INET6_ADDRSTRLEN ];
-		snprintf( b, sizeof(b), "%d", t.port );	
+		snprintf( b, sizeof(b), "%d", port );	
 		memset( &hints, 0, sizeof( hints ) );
 		hints.ai_family = AF_UNSPEC;
 		hints.ai_socktype = SOCK_STREAM;
@@ -425,30 +422,31 @@ int load_www ( const char *p, wwwResponse *r ) {
 			return 1;
 		}
 
-		//Get the internet address
-		inet_ntop(pp->ai_family, get_in_addr((struct sockaddr *)pp->ai_addr),s, sizeof s);
+		//This is some weird stuff...
 	#ifdef INCLUDE_TIMEOUT 
 		struct sigaction da;
 		da.sa_handler = SIG_DFL;
 		sigaction( SIGVTALRM, &da, NULL );
 	#endif
 
-    fprintf(stderr,"Client connected to: %s\n", s );
-		freeaddrinfo(servinfo);
+		//Get the internet address
+		inet_ntop( pp->ai_family, 
+			get_in_addr((struct sockaddr *)pp->ai_addr), r->ipv4, sizeof(r->ipv4));
+		#ifdef DEBUG_H
+    fprintf( stderr,"Client connected to: %s\n", r->ipv4 );
+		#endif
+		freeaddrinfo( servinfo );
 
-		int sb=0, rb=0;
-		int mlen = strlen(GetMsg);
+		int sb = 0, rb = 0, mlen = strlen(GetMsg);
 		//And do the send and read?
 		//If we send a lot of data, like a giant post, then this should be reflected here...
-		while ( 1 ) {
+		for ( ;; ) {	
 			int b;
-			if (( b = send( sockfd, GetMsg, mlen, 0 )) == -1 ) {
+			if ( ( b = send( sockfd, GetMsg, mlen, 0 )) == -1 ) {
 				fprintf(stderr, "Error sending mesaage to: %s\n", s );
-				//
 			}
 		
-			sb += b;
-			if ( sb != mlen ) {
+			if ( ( sb += b ) != mlen ) {
 				fprintf(stderr, "%d total bytes sent\n", sb );
 				continue;
 			}
@@ -458,9 +456,11 @@ int load_www ( const char *p, wwwResponse *r ) {
  
 		//WE most likely will receive a very large page... so do that here...	
 		int crlf = -1, first = 0;
-		msg = malloc(1);
+		if ( !( msg = malloc( 16 ) ) || !memset( msg, 0, 16 ) ) {
+			return snprintf( r->err, sizeof( r->err ), "%s\n", "Allocation failure." );
+		} 
 
-		while ( 1 ) {
+		for ( ;; ) {	
 			uint8_t xbuf[ 4096 ];
 			memset( xbuf, 0, sizeof(xbuf) );
 			int blen = recv( sockfd, xbuf, sizeof(xbuf), 0 );
@@ -556,7 +556,7 @@ int load_www ( const char *p, wwwResponse *r ) {
 		struct addrinfo hints, *servinfo, *pp;
 		int rv;
 		char b[ 10 ] = { 0 }, s[ INET6_ADDRSTRLEN ];
-		snprintf( b, 10, "%d", t.port );	
+		snprintf( b, 10, "%d", port );	
 
 		//Initialize the hints structure
 		memset( &hints, 0, sizeof( hints ) );

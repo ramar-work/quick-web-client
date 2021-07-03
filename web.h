@@ -21,13 +21,9 @@ typedef struct wwwResponse {
 	char *redirect_uri;
 	char ctype[ 1024 ];
 	char err[ 1024 ];
-	char ipv4[ 1024 ];
+	char ipv4[ INET6_ADDRSTRLEN ];
+	char ipv6[ 1024 ];
 } wwwResponse;
-
-typedef struct { 
-	int secure, port; 
-	char *addr; 
-} wwwType;
 
 typedef struct stretchBuffer {
 	int len;
