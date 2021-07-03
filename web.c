@@ -1,4 +1,20 @@
 /*web.c - Handle any web requests*/
+/* ---------------------------------------------- *
+ * web.c
+ * =====
+ * 
+ * Summary
+ * -------
+ * Handle any web request (w/o cURL).
+ * 
+ * TODO
+ * ----
+ * - Only handles GET right now.  Needs other methods.
+ * - Consider merging with zhttp to enable packaging responses.
+ * - Allow alternate SSL backends. (at least OpenSSL)
+ * - Test with http://etc.com:2000 (port numbers)
+ * 
+ * ---------------------------------------------- */
 #include "web.h"
 
 #define ERR(v,...) \
@@ -25,25 +41,8 @@
 	fprintf(stderr,m); exit(x);
 #endif
 
-#ifndef SHOW_REQUEST
- #define DUMPRST( b, blen )
-#else
- #define DUMPRST( b, blen ) write( 2, b, blen );
-#endif
 
-#ifndef SHOW_RESPONSE
- #define DUMPRSP( b, blen )
-#else
- #define DUMPRSP( b, blen ) write( 2, b, blen );
-#endif
-
-#ifndef WRITE_RESPONSE
- #define WRITEF( fn, b, blen )
-#else
- #define WRITEF( fn, b, blen ) write_to_file( fn, b, blen );
-#endif
-
-#ifndef DEBUG
+#ifndef DEBUG_H
  #define RUN(c) (c)
 #else
  #define RUN(c) \
@@ -55,21 +54,6 @@
 #else
  #define VPRINTF( ... ) fprintf( stderr, __VA_ARGS__ ) ; fflush(stderr);
 #endif
-
-#define FPATH "tests/colombo/"
-
-#ifndef FPATH
- #define FPATH "./"
-#endif
-
-#define ADD_ELEMENT( ptr, ptrListSize, eSize, element ) \
-	if ( ptr ) \
-		ptr = realloc( ptr, sizeof( eSize ) * ( ptrListSize + 1 ) ); \
-	else { \
-		ptr = malloc( sizeof( eSize ) ); \
-	} \
-	*(&ptr[ ptrListSize ]) = element; \
-	ptrListSize++;
 
 
 //User-Agent
@@ -314,8 +298,9 @@ void print_www ( wwwResponse *r ) {
 #endif
 
 
-//...
+//Use int pointers
 static int select_www( const char *addr, wwwType *t ) {
+//static int select_www( const char *addr, int *port, int *secure ) {
 	//Checking for secure or not...
 	//you can extract the root from here...
 	if ( memcmp( "https", addr, 5 ) == 0 )
@@ -337,26 +322,20 @@ int load_www ( const char *p, wwwResponse *r ) {
 		"Host: %s\r\n"
 		"User-Agent: %s\r\n\r\n"
 	;
-	int err, ret, sd, ii, type, len, sockfd, c = 0, chunked = 0;
+	int err, ret, sd, ii, type, len, sockfd, c = 0, chunked = 0, port = 0, secure = 0;
 	unsigned int status;
 	wwwType t = {0};
 	uint8_t *msg = NULL;
 	char *desc = NULL, buf[ 4096 ] = { 0 }, GetMsg[2048] = { 0 }, rootBuf[ 128 ] = { 0 };
 	const char *root = NULL, *site = NULL, *path = NULL, *urlpath = NULL;
 
+	//Negotiate http/https
 	if ( !select_www( p, &t ) ) {
 		return ERR( r->err, "URL '%s' appears to be a fragment.", p );
 	}
 
 	//What does this do?
 	p = ( t.secure ) ? &p[8] : &p[7], fp = p;
-
-	//This is all GnuTLS stuff (which is only used in secure sessions, so why here?)	
-	gnutls_session_t session;
-	memset( &session, 0, sizeof(gnutls_session_t));
-	gnutls_datum_t out;
-	gnutls_certificate_credentials_t xcred;
-	memset( &xcred, 0, sizeof(gnutls_certificate_credentials_t));
 
 	//Chop the URL very simply and crudely.
 	if (( c = memchrat( p, '/', strlen( p ) )) == -1 )
@@ -381,43 +360,14 @@ int load_www ( const char *p, wwwResponse *r ) {
 	//request, dealing with TLS at C level is more complicated than it probably should be.  
 	//Do either an insecure request or a secure request
 	if ( !t.secure ) {
-#if 0
-		//Use libCurl
-		CURL *curl = NULL;
-		CURLcode res;
-		curl_global_init( CURL_GLOBAL_DEFAULT );
-		curl = curl_easy_init();
-
-		if ( curl ) {
-			Sbuffer sb = { 0, malloc(1) }; 	
-			curl_easy_setopt( curl, CURLOPT_URL, p );
-			curl_easy_setopt( curl, CURLOPT_WRITEFUNCTION, WriteDataCallbackCurl );
-			curl_easy_setopt( curl, CURLOPT_WRITEDATA, (void *)&sb );
-			curl_easy_setopt( curl, CURLOPT_USERAGENT, ua );
-			res = curl_easy_perform( curl );
-			if ( res != CURLE_OK ) {
-				fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-				curl_easy_cleanup( curl );
-			}
-			write(2,sb.buf,sb.len);
-			curl_global_cleanup();
-			*destlen = sb.len;
-			*dest = (char *)sb.buf;
-		}	
-#else
-
 		//socket connect is the shorter way to do this...
 		struct addrinfo hints, *servinfo, *pp;
 		int rv;
-		char s[ INET6_ADDRSTRLEN ];
-		char b[ 10 ] = { 0 };
-		snprintf( b, 10, "%d", t.port );	
+		char b[10] = {0}, s[ INET6_ADDRSTRLEN ];
+		snprintf( b, sizeof(b), "%d", t.port );	
 		memset( &hints, 0, sizeof( hints ) );
 		hints.ai_family = AF_UNSPEC;
 		hints.ai_socktype = SOCK_STREAM;
-		VPRINTF("Attempting connection to '%s':%d\n", root, t.port);
-		VPRINTF("Full path (%s)\n", p );
-		//fprintf(stderr, "%s\n", p );
 
 	#ifdef INCLUDE_TIMEOUT 
 		//Set up a timer to kill requests that are taking too long.
@@ -443,28 +393,24 @@ int load_www ( const char *p, wwwResponse *r ) {
 			fprintf( stderr, "Set Timer Error: %s\n", strerror( errno ) );
 			return 0;
 		}
-	#if 0	
-		int ffd = open( "/dev/null", O_RDWR );
-		for (int p=0;p<30000000;p++) write(ffd,"asdf",4);
-	#endif
 	#endif
 
 		//Get the address info of the domain here.
 		//TODO: Use Bind or another library for this.  Apparently there is no way to detect timeout w/o using a signal...
-		if ( (rv = getaddrinfo( root, b, &hints, &servinfo )) != 0 ) {
+		if ( ( rv = getaddrinfo( root, b, &hints, &servinfo ) ) != 0 ) {
 			fprintf( stderr, "getaddrinfo: %s\n", gai_strerror( rv ) );
 			return 0;
 		}
 
 		//Loop and find the right address
 		for ( pp = servinfo; pp != NULL; pp = pp->ai_next ) {
-			if ((sockfd = socket( pp->ai_family, pp->ai_socktype, pp->ai_protocol )) == -1) {	
+			if ( ( sockfd = socket( pp->ai_family, pp->ai_socktype, pp->ai_protocol ) ) == -1) {	
 				fprintf(stderr,"client: socket error: %s\n",strerror(errno));
 				continue;
 			}
 
 			//fprintf(stderr, "%d\n", sockfd);
-			if (connect( sockfd, pp->ai_addr, pp->ai_addrlen) == -1) {
+			if ( connect( sockfd, pp->ai_addr, pp->ai_addrlen) == -1 ) {
 				close( sockfd );
 				fprintf(stderr,"client: connect: %s\n",strerror(errno));
 				continue;
@@ -509,11 +455,9 @@ int load_www ( const char *p, wwwResponse *r ) {
 
 			break;
 		}
-
  
 		//WE most likely will receive a very large page... so do that here...	
-		int first=0;
-		int crlf=-1;
+		int crlf = -1, first = 0;
 		msg = malloc(1);
 
 		while ( 1 ) {
@@ -554,22 +498,24 @@ int load_www ( const char *p, wwwResponse *r ) {
 			memcpy( &msg[ r->len ], xbuf, blen ); 
 			r->len += blen;
 
-			//info about the session
-			//SSLPRINTF( "recvd: %d , clen: %d , mlen: %d\n", r->len - crlf, r->clen, r->len );
-
-			if ( !r->clen ) {
+			if ( !r->clen )
 				return ERR( r->err, "%s\n", "No length specified, parser error!." );
-			}
 			else if ( r->clen && ( r->len - crlf ) == r->clen ) {
 				SSLPRINTF( "Full HTTP message received\n" );
 				break;
 			}
 		}
-		//r->data = (uint8_t *)msg;
-		//r->data = msg;
-#endif
 	}
 	else {
+		//Define
+		gnutls_session_t session;
+		gnutls_datum_t out;
+		gnutls_certificate_credentials_t xcred;
+
+		//Initialize
+		memset( &session, 0, sizeof(gnutls_session_t));
+		memset( &xcred, 0, sizeof(gnutls_certificate_credentials_t));
+
 		//Do socket connect (but after initial connect, I need the file desc)
 		sockfd = 0;
 
@@ -786,15 +732,6 @@ int load_www ( const char *p, wwwResponse *r ) {
 					} 
 				}
 			}
-			//fprintf( stderr, "%s, %d: my code ran.... but why stop?", __FILE__, __LINE__ ); 
-		#if 0
-		#ifdef SSL_DEBUG
-			char *xmsg = malloc( ret + 1 );
-			memcpy( xmsg, xbuf, ret );
-			ADD_ELEMENT( ptrarr, ptrarrlen, char *, xmsg );
-			ADD_ELEMENT( szarr, szarrlen, int, ret );
-		#endif
-		#endif
 
 			//Read into a bigger buffer	
 			if ( !( msg = realloc( msg, r->len + ( ret + 1 ) ) ) ) {
@@ -831,24 +768,6 @@ int load_www ( const char *p, wwwResponse *r ) {
 		if ( err != GNUTLS_E_SUCCESS ) {
 			return snprintf( r->err, sizeof( r->err ), "%s\n",  gnutls_strerror( ret ) );
 		} 	
-			
-	#if 0	
-	#ifdef SSL_DEBUG
-		//This worked...
-		int sz=0;
-		for ( int x = 0; x<szarrlen; x++ ) sz += szarr[ x ];
-		fprintf( stderr, "Total bytes recvd: %d\n", sz );
-
-		for ( int x = 0; x<ptrarrlen; x++ ) {
-			char *pt = ptrarr[ x ];
-			int st = szarr[ x ];
-			fprintf(stderr, ",{ size: %d, data: ", st);
-			write( 2, "'", 1 );
-			write( 2, pt, 10 );
-			write( 2, "' }\n", 4 );
-		}
-	#endif
-	#endif
 	}
 
 	//Now, both requests ought to be done.  Set things here.

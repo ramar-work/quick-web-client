@@ -21,10 +21,11 @@ typedef struct wwwResponse {
 	char *redirect_uri;
 	char ctype[ 1024 ];
 	char err[ 1024 ];
+	char ipv4[ 1024 ];
 } wwwResponse;
 
 typedef struct { 
-	int secure, port, fragment; 
+	int secure, port; 
 	char *addr; 
 } wwwType;
 
