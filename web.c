@@ -297,6 +297,7 @@ void print_www ( wwwResponse *r ) {
 #endif
 
 
+
 //Use int pointers
 static int select_www( const char *addr, int *port, int *secure ) {
 	//Checking for secure or not...
@@ -311,6 +312,7 @@ static int select_www( const char *addr, int *port, int *secure ) {
 
 	return 1;
 }
+
 
 
 //Load webpages via HTTP/S
@@ -654,12 +656,6 @@ int load_www ( const char *p, wwwResponse *r ) {
 
 		//This is a sloppy quick way to handle EAGAIN
 		int crlf = -1, first = 0;
-	#ifdef SSL_DEBUG
-		char **ptrarr = NULL;
-		int ptrarrlen = 0;
-		int *szarr = NULL;
-		int szarrlen = 0;
-	#endif
 		if ( !( msg = malloc( 16 ) ) || !memset( msg, 0, 16 ) ) {
 			return snprintf( r->err, sizeof( r->err ), "%s\n", "Allocation failure." );
 		} 
